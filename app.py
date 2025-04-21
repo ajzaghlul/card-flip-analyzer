@@ -29,27 +29,42 @@ def get_raw_card_prices(search_term):
     return results
 
 # Estimate PSA 10 value by pulling eBay sold listings
+import json
+
 def get_psa10_price_estimate(search_term):
-    query = f"{search_term} PSA 10"
-    url = f"https://www.ebay.com/sch/i.html?_nkw={query.replace(' ', '+')}&LH_Complete=1&LH_Sold=1"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
+    try:
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Origin': 'https://www.130point.com',
+            'Referer': 'https://www.130point.com/cardlookup.htm',
+            'User-Agent': 'Mozilla/5.0'
+        }
 
-    items = soup.select("li.s-item")[:10]
-    prices = []
-    for item in items:
-        price_tag = item.select_one(".s-item__price")
-        if price_tag:
-            try:
-                price = float(price_tag.text.replace('$', '').replace(',', '').split(' ')[0])
-                prices.append(price)
-            except:
-                continue
+        payload = {
+            'searchterm': f'{search_term} PSA 10'
+        }
 
-    if prices:
-        return sum(prices) / len(prices)
-    else:
-        return 100.00  # fallback default
+        response = requests.post('https://www.130point.com/ajax/search_card', headers=headers, data=payload)
+        data = json.loads(response.text)
+
+        prices = []
+        for item in data:
+            title = item.get('title', '').lower()
+            price_str = item.get('price', '')
+            if "psa 10" in title and price_str and "$" in price_str:
+                try:
+                    price = float(price_str.replace('$', '').replace(',', '').strip())
+                    prices.append(price)
+                except:
+                    continue
+
+        if prices:
+            return sum(prices) / len(prices)
+        else:
+            return None
+    except Exception as e:
+        print("Error pulling from 130point:", e)
+        return None
 
 st.title("Card Flip Profit Analyzer")
 
