@@ -1,105 +1,89 @@
-
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-import time
-
-# Fetch raw card listings from eBay
-def get_raw_card_prices(search_term):
-    url = f"https://www.ebay.com/sch/i.html?_nkw={search_term.replace(' ', '+')}+raw&_sop=12"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, 'html.parser')
-
-    items = soup.select("li.s-item")[:10]
-    results = []
-    for item in items:
-        title = item.select_one(".s-item__title")
-        price = item.select_one(".s-item__price")
-        link = item.select_one("a.s-item__link")
-        if title and price and link:
-            try:
-                results.append({
-                    'title': title.text,
-                    'price': float(price.text.replace('$', '').replace(',', '').split(' ')[0]),
-                    'link': link['href']
-                })
-            except:
-                continue
-    return results
-
-# Estimate PSA 10 value by pulling eBay sold listings
 import json
+import pandas as pd
 
-def get_psa10_price_estimate(search_term):
+# 130point Sold Listings API (Unofficial)
+def get_130point_sales(search_term):
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Origin': 'https://www.130point.com',
+        'Referer': 'https://www.130point.com/cardlookup.htm',
+        'User-Agent': 'Mozilla/5.0'
+    }
+    data = {'searchterm': search_term}
+    response = requests.post('https://www.130point.com/ajax/search_card', headers=headers, data=data)
     try:
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Origin': 'https://www.130point.com',
-            'Referer': 'https://www.130point.com/cardlookup.htm',
-            'User-Agent': 'Mozilla/5.0'
-        }
+        return json.loads(response.text)
+    except json.JSONDecodeError:
+        return []
 
-        payload = {
-            'searchterm': f'{search_term} PSA 10'
-        }
-
-        response = requests.post('https://www.130point.com/ajax/search_card', headers=headers, data=payload)
-        data = json.loads(response.text)
-
-        prices = []
-        for item in data:
-            title = item.get('title', '').lower()
-            price_str = item.get('price', '')
-            if "psa 10" in title and price_str and "$" in price_str:
-                try:
-                    price = float(price_str.replace('$', '').replace(',', '').strip())
-                    prices.append(price)
-                except:
-                    continue
-
-        if prices:
-            return sum(prices) / len(prices)
+# Parse sold listings
+def parse_sales(data, psa_filter=False):
+    sales = []
+    for item in data:
+        title = item.get('title', '').lower()
+        price_str = item.get('price', '')
+        if "$" not in price_str:
+            continue
+        try:
+            price = float(price_str.replace('$', '').replace(',', '').strip())
+        except:
+            continue
+        if psa_filter:
+            if "psa 10" in title:
+                sales.append({'title': item['title'], 'price': price})
         else:
-            return None
-    except Exception as e:
-        print("Error pulling from 130point:", e)
-        return None
+            if not any(x in title for x in ["psa", "bgs", "sgc", "cgc", "beckett", "auto", "autograph", "signed"]):
+                sales.append({'title': item['title'], 'price': price})
+    return sales
 
-st.title("Card Flip Profit Analyzer")
-
-search_term = st.text_input("Enter card search (e.g. '2020 Topps Chrome Luis Robert')")
-grading_fee = st.number_input("Enter grading cost", value=25.00)
-ebay_fee_percent = st.number_input("eBay final value fee %", value=13.0)
+# Streamlit UI
+st.title("📈 Card Flip Analyzer")
+search_term = st.text_input("Enter card name (e.g. 2020 Topps Chrome Luis Robert)")
+grading_fee = st.number_input("PSA grading fee ($)", value=25.00)
+ebay_fee_percent = st.number_input("eBay + PayPal fees (%)", value=13.0)
 
 if search_term:
-    with st.spinner('Fetching raw listings and PSA 10 estimates...'):
-        raw_cards = get_raw_card_prices(search_term)
-        psa10_price = get_psa10_price_estimate(search_term)
-        time.sleep(1)
+    with st.spinner("Fetching data from 130point..."):
+        raw_data = get_130point_sales(search_term)
+        psa10_data = get_130point_sales(search_term + " PSA 10")
 
-    st.subheader("Raw Card Listings")
-    for card in raw_cards:
-        st.markdown(f"[{card['title']}]({card['link']}) - ${card['price']:.2f}")
+    raw_sales = parse_sales(raw_data, psa_filter=False)
+    psa10_sales = parse_sales(psa10_data, psa_filter=True)
 
-    st.subheader("Estimated PSA 10 Price (Based on Sold Listings)")
-    st.write(f"${psa10_price:.2f}")
+    st.subheader("🟢 Raw Card Sales")
+    if raw_sales:
+        raw_df = pd.DataFrame(raw_sales)
+        st.dataframe(raw_df)
+    else:
+        st.write("No raw card sales found.")
 
-    st.subheader("Profit Analysis")
-    data = []
-    for card in raw_cards:
-        total_cost = card['price'] + grading_fee
-        sale_price = psa10_price
-        net_after_fees = sale_price * (1 - ebay_fee_percent / 100)
-        profit = net_after_fees - total_cost
-        data.append({
-            'Title': card['title'],
-            'Raw Price': card['price'],
-            'Total Cost': total_cost,
-            'PSA 10 Sale (Est)': sale_price,
-            'Net After Fees': net_after_fees,
-            'Profit': profit
-        })
+    st.subheader("🔵 PSA 10 Sales")
+    if psa10_sales:
+        psa_df = pd.DataFrame(psa10_sales)
+        avg_psa_price = psa_df['price'].mean()
+        st.dataframe(psa_df)
+        st.write(f"**Average PSA 10 Sale:** ${avg_psa_price:.2f}")
+    else:
+        st.write("No PSA 10 sales found.")
+        avg_psa_price = None
 
-    df = pd.DataFrame(data)
-    st.dataframe(df.style.format("{:.2f}"))
+    if raw_sales and avg_psa_price:
+        st.subheader("💰 Flip Profit Estimates")
+        profit_data = []
+        for card in raw_sales:
+            total_cost = card['price'] + grading_fee
+            net_sale = avg_psa_price * (1 - ebay_fee_percent / 100)
+            profit = net_sale - total_cost
+            profit_data.append({
+                'Raw Title': card['title'],
+                'Raw Price': card['price'],
+                'Total Cost': total_cost,
+                'Est. PSA 10 Sale': avg_psa_price,
+                'Net After Fees': net_sale,
+                'Estimated Profit': profit
+            })
+
+        profit_df = pd.DataFrame(profit_data)
+        st.dataframe(profit_df.style.format("${:.2f}"))
